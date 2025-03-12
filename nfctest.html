@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NFC 태그 Test</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    label { display: block; margin: 10px 0 5px; }
+    input, button { margin-bottom: 20px; }
+    #result { color: green; font-weight: bold; }
+    #error { color: red; font-weight: bold; }
+    .id-control { display: flex; align-items: center; gap: 10px; }
+    .id-control button { padding: 5px 10px; }
+  </style>
+</head>
+<body>
+  <h1>NFC 태그 Test</h1>
+
+  <label for="date">날짜 입력 (YY-MM):</label>
+  <input type="month" id="date" required>
+
+  <label for="value">값 입력 (0-15):</label>
+  <input type="number" id="value" min="0" max="15" required>
+
+  <label for="id">ID 입력 (4바이트 unsigned int):</label>
+  <div class="id-control">
+    <button id="decrement-id">-</button>
+    <input type="number" id="id" min="1" max="4294967295" required>
+    <button id="increment-id">+</button>
+  </div>
+
+  <button id="write-read">NFC 태그 쓰기 및 읽기</button>
+
+  <div id="result"></div>
+  <div id="error"></div>
+
+  <script>
+    let ndefReader = null;
+    let isScanning = false;
+    
+    const idInput = document.getElementById('id');
+    const dateInput = document.getElementById('date');
+    const resultDiv = document.getElementById('result');
+    const errorDiv = document.getElementById('error');
+
+    const today = new Date();
+    const defaultYear = today.getFullYear();
+    const defaultMonth = String(today.getMonth() + 1).padStart(2, '0');
+    dateInput.value = `${defaultYear}-${defaultMonth}`;
+
+    // ID 값 증가 및 감소 버튼 동작
+    document.getElementById('increment-id').addEventListener('click', () => {
+      const currentId = parseInt(idInput.value, 10) || 0;
+      if (currentId < 4294967295) {
+        idInput.value = currentId + 1;
+      }
+    });
+
+    document.getElementById('decrement-id').addEventListener('click', () => {
+      const currentId = parseInt(idInput.value, 10) || 0;
+      if (currentId > 1) {
+        idInput.value = currentId - 1;
+      }
+    });
+
+    function delay(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // NFC 읽기 작업을 중지하는 함수
+    async function stopNFCScan() {
+      if (ndefReader && isScanning) {
+        try {
+          await ndefReader.stop();
+          isScanning = false;
+        } catch (error) {
+          console.error('NFC 스캔 중지 중 오류:', error);
+        }
+      }
+    }
+
+    // NFC 읽기 작업을 시작하는 함수
+    async function startNFCScan(expectedData) {
+      if (isScanning) {
+        await stopNFCScan();
+      }
+
+      ndefReader = new NDEFReader();
+      isScanning = true;
+
+      return new Promise((resolve, reject) => {
+        let timeoutId;
+
+        const cleanup = () => {
+          clearTimeout(timeoutId);
+          stopNFCScan();
+        };
+
+        ndefReader.scan()
+          .then(() => {
+            ndefReader.onreading = event => {
+              const readData = new Uint8Array(event.message.records[0].data.buffer);
+              const isMatch = readData.every((byte, index) => byte === expectedData[index]);
+              cleanup();
+              resolve(isMatch);
+            };
+
+            // 타임아웃 설정
+            timeoutId = setTimeout(() => {
+              cleanup();
+              resolve(false);
+            }, 2000);
+          })
+          .catch(error => {
+            cleanup();
+            reject(error);
+          });
+      });
+    }
+
+    // NFC 쓰기 및 읽기
+    document.getElementById('write-read').addEventListener('click', async () => {
+      const date = document.getElementById('date').value;
+      const value = parseInt(document.getElementById('value').value, 10);
+      const id = parseInt(idInput.value, 10);
+      const resultDiv = document.getElementById('result');
+      const errorDiv = document.getElementById('error');
+      resultDiv.textContent = '';
+      errorDiv.textContent = '';
+
+      try {
+        // 입력값 검증
+        if (!date || isNaN(value) || isNaN(id) || value < 0 || value > 16 || id < 0 || id > 4294967295) {
+          throw new Error('모든 입력값을 올바르게 입력해주세요.');
+        }
+
+        const [fullYear, mm] = date.split('-').map(Number);
+        const yy = fullYear % 100; // YYYY에서 YY만 가져오기
+        const data = new Uint8Array(143);
+        data[0] = 0x33;
+        data[1] = 0x2B;
+        data[2] = 0x3C;
+        data[3] = yy;               // 4번째 byte: YY
+        data[4] = (mm << 4) | value; // 5번째 byte: 상위 MM, 하위 값
+        data[5] = (id >>> 24) & 0xFF; // 6번째 byte: ID 상위 1바이트
+        data[6] = (id >>> 16) & 0xFF; // 7번째 byte: ID 상위 2바이트
+        data[7] = (id >>> 8) & 0xFF;  // 8번째 byte: ID 상위 3바이트
+        data[8] = id & 0xFF;          // 9번째 byte: ID 하위 1바이트
+
+        // NFC 태그에 데이터 쓰기
+        ndefReader = new NDEFReader();
+        await ndefReader.write({
+          records: [
+            {
+              recordType: "unknown",
+              data: data.buffer,
+            },
+          ],
+        });
+        
+        data[2] = 0x3E;
+        resultDiv.textContent = 'NFC 태그에 데이터 쓰기 성공!';
+
+        //var delayInMilliseconds = 200; 
+
+        //setTimeout(function() {
+        //}, delayInMilliseconds);
+        //await stopNFCScan();
+
+      } catch (err) {
+        errorDiv.textContent = `오류 발생: ${err.message}`;
+      } //finally {
+        //await stopNFCScan();
+      //}
+    });
+  </script>
+</body>
+</html>
